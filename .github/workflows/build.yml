@@ -1,0 +1,134 @@
+# =============================================================================
+# FactoryMonitor — Pipeline de build automatique
+#
+# Ce workflow compile le mod Satisfactory et produit un artefact .smod
+# téléchargeable depuis l'onglet "Actions" de GitHub.
+#
+# PRÉREQUIS — GitHub Secrets à configurer dans :
+#   Settings → Secrets and variables → Actions → New repository secret
+#
+#   SECRET                  DESCRIPTION
+#   ──────────────────────────────────────────────────────────────────
+#   EPIC_GAMES_EMAIL        Adresse e-mail de ton compte Epic Games
+#   EPIC_GAMES_PASSWORD     Mot de passe de ton compte Epic Games
+#
+# Ces identifiants permettent au runner de télécharger les binaires
+# pré-compilés d'Unreal Engine 5.3 depuis l'image Docker de la
+# communauté SML (ghcr.io/satisfactorymodding/unreal-engine:5.3).
+# Ils ne sont jamais exposés dans les logs ni dans les artefacts.
+#
+# ARCHITECTURE DE BUILD :
+#   Le runner tire l'image Docker officielle SML qui embarque UE 5.3,
+#   les headers CSS (Content Satisfactory Source), et l'outil Alpakit
+#   en mode headless. La compilation produit un fichier .smod signé.
+# =============================================================================
+
+name: 🏭 Build FactoryMonitor Mod
+
+on:
+  push:
+    branches:
+      - main
+    # Optionnel : ne déclencher le build que si des fichiers sources changent.
+    # Supprimez le bloc "paths" si vous voulez rebuilder sur chaque push.
+    paths:
+      - 'FactoryMonitor/**'
+      - '.github/workflows/build.yml'
+
+  # Permet de déclencher le build manuellement depuis l'onglet Actions.
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job unique : compilation + packaging du .smod
+  # ---------------------------------------------------------------------------
+  build:
+    name: Compile & Package .smod
+    runs-on: ubuntu-latest
+
+    # Timeout de sécurité : si le build dépasse 60 min, il est annulé
+    # pour éviter une consommation excessive de minutes GitHub Actions.
+    timeout-minutes: 60
+
+    steps:
+      # ── 1. Checkout du code source ─────────────────────────────────────────
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Récupère l'historique complet pour que les outils de versioning
+          # puissent lire les tags git si nécessaire.
+          fetch-depth: 0
+
+      # ── 2. Build via l'action communautaire SML ────────────────────────────
+      #
+      # Nogg-aholic/smr-build-action est l'action de référence maintenue
+      # par la communauté Satisfactory Modding pour compiler des plugins UE
+      # en .smod via Alpakit headless.
+      #
+      # Paramètres :
+      #   mod_reference  → Nom exact du plugin (doit correspondre au .uplugin)
+      #   game_version   → Version cible de Satisfactory (Early Access ou 1.0)
+      #
+      # L'action gère automatiquement :
+      #   - Le pull de l'image Docker UE 5.3
+      #   - L'authentification Epic Games
+      #   - L'invocation d'Alpakit en mode CI
+      #   - La production du fichier FactoryMonitor.smod
+      # ──────────────────────────────────────────────────────────────────────
+      - name: 🔨 Build mod (Alpakit headless via smr-build-action)
+        uses: Nogg-aholic/smr-build-action@v2
+        with:
+          # Doit correspondre exactement au champ "Name" dans FactoryMonitor.uplugin
+          mod_reference: FactoryMonitor
+          # Version cible. Consultez les releases du jeu pour mettre à jour.
+          game_version: "1.0"
+        env:
+          # Identifiants Epic Games injectés depuis les GitHub Secrets.
+          # Ne jamais hardcoder ces valeurs ici.
+          EPIC_GAMES_EMAIL:    ${{ secrets.EPIC_GAMES_EMAIL }}
+          EPIC_GAMES_PASSWORD: ${{ secrets.EPIC_GAMES_PASSWORD }}
+          # Le GITHUB_TOKEN est automatiquement fourni par GitHub Actions —
+          # utile si l'action doit accéder aux métadonnées du dépôt.
+          GITHUB_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 3. Upload de l'artefact .smod ──────────────────────────────────────
+      #
+      # Le fichier .smod produit par Alpakit est sauvegardé comme artefact
+      # de workflow. Il est téléchargeable depuis :
+      #   GitHub → Actions → Dernier run → Section "Artifacts"
+      # pendant 30 jours (durée par défaut, configurable ci-dessous).
+      # ──────────────────────────────────────────────────────────────────────
+      - name: 📦 Upload artefact .smod
+        uses: actions/upload-artifact@v4
+        # Cette étape s'exécute même si le build échoue (utile pour
+        # inspecter les fichiers partiels en cas d'erreur de packaging).
+        if: always()
+        with:
+          # Nom de l'artefact visible dans l'interface GitHub Actions.
+          name: FactoryMonitor-${{ github.sha }}
+          # Recherche récursive du .smod produit par Alpakit.
+          # L'action place généralement le fichier dans le répertoire
+          # du plugin ou dans un dossier "dist/".
+          path: |
+            **/*.smod
+            **/Saved/ArchivedPlugins/**/*.smod
+          # Échoue si aucun .smod n'est trouvé — signal d'échec de build clair.
+          if-no-files-found: error
+          # Durée de conservation de l'artefact en jours (max: 90).
+          retention-days: 30
+
+      # ── 4. Résumé du build ─────────────────────────────────────────────────
+      # Affiche un récapitulatif dans l'interface GitHub Actions.
+      - name: 📋 Résumé du build
+        if: success()
+        run: |
+          echo "## ✅ Build réussi" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Champ        | Valeur |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Mod          | FactoryMonitor |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit       | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branche      | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Déclenché par| ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Le fichier \`.smod\` est disponible dans la section **Artifacts** ci-dessus." >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,33 @@
+# Unreal Engine — fichiers générés à la compilation
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# Fichiers de configuration locaux
+*.ini
+!Config/Default*.ini
+
+# Fichiers de secrets — ne jamais versionner
+.env
+*.pem
+*.key
+
+# Système d'exploitation
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
