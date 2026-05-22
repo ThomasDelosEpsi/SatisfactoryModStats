@@ -29,11 +29,11 @@ on:
   push:
     branches:
       - main
-    # Optionnel : ne déclencher le build que si des fichiers sources changent.
-    # Supprimez le bloc "paths" si vous voulez rebuilder sur chaque push.
-    paths:
-      - 'FactoryMonitor/**'
-      - '.github/workflows/build.yml'
+    # ⚠️  PAS de filtre "paths:" ici.
+    # Un filtre paths: ignore les commits qui ne modifient aucun fichier
+    # listé (y compris les commits vides créés avec --allow-empty).
+    # Pour limiter les builds aux vraies modifications de code, réactivez
+    # ce filtre une fois que le pipeline fonctionne correctement.
 
   # Permet de déclencher le build manuellement depuis l'onglet Actions.
   workflow_dispatch:
@@ -46,50 +46,44 @@ jobs:
     name: Compile & Package .smod
     runs-on: ubuntu-latest
 
-    # Timeout de sécurité : si le build dépasse 60 min, il est annulé
-    # pour éviter une consommation excessive de minutes GitHub Actions.
-    timeout-minutes: 60
+    # Timeout de sécurité : si le build dépasse 90 min (image Docker UE lourde),
+    # le job est annulé pour éviter une consommation excessive de minutes.
+    timeout-minutes: 90
 
     steps:
       # ── 1. Checkout du code source ─────────────────────────────────────────
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
         with:
-          # Récupère l'historique complet pour que les outils de versioning
-          # puissent lire les tags git si nécessaire.
           fetch-depth: 0
 
-      # ── 2. Build via l'action communautaire SML ────────────────────────────
+      # ── 2. Build via l'image Docker officielle SML ─────────────────────────
       #
-      # Nogg-aholic/smr-build-action est l'action de référence maintenue
-      # par la communauté Satisfactory Modding pour compiler des plugins UE
-      # en .smod via Alpakit headless.
+      # POURQUOI DOCKER ?
+      #   Compiler un mod Satisfactory nécessite Unreal Engine 5.3 complet +
+      #   les headers CSS (Content Satisfactory Source). L'équipe SML maintient
+      #   une image Docker pré-compilée (~50 GB) sur ghcr.io qui embarque tout
+      #   le nécessaire, y compris Alpakit en mode headless.
+      #   C'est l'approche recommandée et documentée par la communauté SML
+      #   pour les pipelines CI sans runner self-hosted.
       #
-      # Paramètres :
-      #   mod_reference  → Nom exact du plugin (doit correspondre au .uplugin)
-      #   game_version   → Version cible de Satisfactory (Early Access ou 1.0)
+      # STRUCTURE DU VOLUME :
+      #   Le runner monte le plugin (ce dépôt) dans le répertoire Mods/ du
+      #   projet Satisfactory à l'intérieur du conteneur, là où Alpakit
+      #   s'attend à le trouver pour le packaging.
       #
-      # L'action gère automatiquement :
-      #   - Le pull de l'image Docker UE 5.3
-      #   - L'authentification Epic Games
-      #   - L'invocation d'Alpakit en mode CI
-      #   - La production du fichier FactoryMonitor.smod
+      # RÉSULTAT :
+      #   Alpakit produit un fichier FactoryMonitor.smod dans le dossier
+      #   Saved/ArchivedPlugins/ du projet. L'étape suivante le récupère.
       # ──────────────────────────────────────────────────────────────────────
-      - name: 🔨 Build mod (Alpakit headless via smr-build-action)
-        uses: Nogg-aholic/smr-build-action@v2
-        with:
-          # Doit correspondre exactement au champ "Name" dans FactoryMonitor.uplugin
-          mod_reference: FactoryMonitor
-          # Version cible. Consultez les releases du jeu pour mettre à jour.
-          game_version: "1.0"
-        env:
-          # Identifiants Epic Games injectés depuis les GitHub Secrets.
-          # Ne jamais hardcoder ces valeurs ici.
-          EPIC_GAMES_EMAIL:    ${{ secrets.EPIC_GAMES_EMAIL }}
-          EPIC_GAMES_PASSWORD: ${{ secrets.EPIC_GAMES_PASSWORD }}
-          # Le GITHUB_TOKEN est automatiquement fourni par GitHub Actions —
-          # utile si l'action doit accéder aux métadonnées du dépôt.
-          GITHUB_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
+      - name: 🔨 Build mod (Alpakit headless — Docker SML UE 5.3)
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/game/Mods/FactoryMonitor" \
+            --env EPIC_EMAIL="${{ secrets.EPIC_GAMES_EMAIL }}" \
+            --env EPIC_PASSWORD="${{ secrets.EPIC_GAMES_PASSWORD }}" \
+            ghcr.io/satisfactorymodding/unreal-engine:5.3 \
+            package FactoryMonitor
 
       # ── 3. Upload de l'artefact .smod ──────────────────────────────────────
       #
