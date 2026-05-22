@@ -132,7 +132,7 @@ jobs:
       #   SF_PROJ  = chemin complet vers FactoryGame.uproject
       #   MOD_OUT  = dossier de sortie pour le .smod
       - name: 🔧 Build with Alpakit (RunUAT)
-        shell: pwsh
+        shell: powershell
         env:
           UE_ROOT:    ${{ vars.UE_ROOT }}
           SF_PROJ:    ${{ vars.SF_PROJ }}
@@ -195,7 +195,7 @@ jobs:
       # ── Résumé affiché dans l'onglet Actions ───────────────────────────────
       - name: 📋 Résumé du build
         if: success()
-        shell: pwsh
+        shell: powershell
         run: |
           @"
           ## ✅ Build réussi
