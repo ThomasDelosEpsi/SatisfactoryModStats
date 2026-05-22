@@ -1,0 +1,36 @@
+{
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "1.0.0",
+    "FriendlyName": "Factory Monitor",
+    "Description": "Headless server-side mod that pushes factory, inventory and power metrics to an external webhook. No UI. No local port binding.",
+    "Category": "Satisfactory Mods",
+    "CreatedBy": "",
+    "CreatedByURL": "",
+    "DocsURL": "",
+    "MarketplaceURL": "",
+    "SupportURL": "",
+    "CanContainContent": false,
+    "IsBetaVersion": false,
+    "IsExperimentalVersion": false,
+    "Installed": false,
+
+    "SemVersion": "1.0.0",
+    "GameVersion": ">=1.0.0",
+
+    "Plugins": [
+        {
+            "Name": "SML",
+            "Enabled": true,
+            "SemVersion": ">=3.11.3"
+        }
+    ],
+
+    "Modules": [
+        {
+            "Name": "FactoryMonitor",
+            "Type": "ServerOnly",
+            "LoadingPhase": "PostDefault"
+        }
+    ]
+}
