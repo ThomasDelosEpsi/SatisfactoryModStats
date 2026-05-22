@@ -1,128 +1,211 @@
 # =============================================================================
-# FactoryMonitor — Pipeline de build automatique
+# FactoryMonitor — Pipeline de build Satisfactory Mod
 #
-# Ce workflow compile le mod Satisfactory et produit un artefact .smod
-# téléchargeable depuis l'onglet "Actions" de GitHub.
+# POURQUOI UN SELF-HOSTED RUNNER ?
+# ─────────────────────────────────────────────────────────────────────────────
+# Compiler un mod Satisfactory est impossible sur les runners GitHub (ubuntu-
+# latest / windows-latest) pour deux raisons structurelles :
 #
-# PRÉREQUIS — GitHub Secrets à configurer dans :
-#   Settings → Secrets and variables → Actions → New repository secret
+#   1. ESPACE DISQUE : Unreal Engine 5.3 + headers CSS = ~60–80 GB.
+#      Les runners GitHub proposent ~14 GB — insuffisant.
 #
-#   SECRET                  DESCRIPTION
-#   ──────────────────────────────────────────────────────────────────
-#   EPIC_GAMES_EMAIL        Adresse e-mail de ton compte Epic Games
-#   EPIC_GAMES_PASSWORD     Mot de passe de ton compte Epic Games
+#   2. LICENCES : Les binaires UE et le code source Satisfactory (CSS)
+#      sont sous accord Epic Games/Coffee Stain. Ils ne peuvent pas être
+#      téléchargés automatiquement sans authentification, et l'image Docker
+#      ghcr.io/satisfactorymodding/unreal-engine est privée.
 #
-# Ces identifiants permettent au runner de télécharger les binaires
-# pré-compilés d'Unreal Engine 5.3 depuis l'image Docker de la
-# communauté SML (ghcr.io/satisfactorymodding/unreal-engine:5.3).
-# Ils ne sont jamais exposés dans les logs ni dans les artefacts.
+# SOLUTION : Self-Hosted Runner sur ta machine de développement Windows.
+# Ta machine a déjà UE 5.3 + Satisfactory + Alpakit installés — le runner
+# GitHub Actions s'exécute dessus comme un service léger (~150 MB) et
+# GitHub lui envoie les jobs à la demande.
 #
-# ARCHITECTURE DE BUILD :
-#   Le runner tire l'image Docker officielle SML qui embarque UE 5.3,
-#   les headers CSS (Content Satisfactory Source), et l'outil Alpakit
-#   en mode headless. La compilation produit un fichier .smod signé.
+# SETUP DU RUNNER (5 minutes) :
+#   1. GitHub → Settings → Actions → Runners → "New self-hosted runner"
+#   2. Sélectionne Windows, copie et exécute les commandes affichées
+#   3. Lors de la configuration, ajoute le label "satisfactory" :
+#      > Enter any additional labels (e.g. 'gpu,x64'): satisfactory
+#   4. Lance le runner en service Windows :
+#      > run.cmd  (ou installe-le comme service avec svc.cmd install)
+#
+# VARIABLES À CONFIGURER (Settings → Secrets and variables → Variables) :
+#   UE_ROOT        Chemin vers UE 5.3, ex: C:\Program Files\Epic Games\UE_5.3
+#   SF_PROJ        Chemin vers FactoryGame.uproject, ex:
+#                  C:\...\SatisfactoryEarlyAccess\FactoryGame.uproject
+#   MOD_OUTPUT     Dossier de sortie du .smod, ex: C:\ModBuilds
 # =============================================================================
 
 name: 🏭 Build FactoryMonitor Mod
 
 on:
   push:
-    branches:
-      - main
-    # ⚠️  PAS de filtre "paths:" ici.
-    # Un filtre paths: ignore les commits qui ne modifient aucun fichier
-    # listé (y compris les commits vides créés avec --allow-empty).
-    # Pour limiter les builds aux vraies modifications de code, réactivez
-    # ce filtre une fois que le pipeline fonctionne correctement.
-
-  # Permet de déclencher le build manuellement depuis l'onglet Actions.
-  workflow_dispatch:
+    branches: [main]
+  workflow_dispatch:   # Déclenchement manuel depuis l'onglet Actions
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Job unique : compilation + packaging du .smod
+  # JOB 1 — Validation rapide (runner GitHub standard, gratuit)
+  # Vérifie la structure du projet AVANT de lancer la compilation lourde.
+  # Feedback en ~20 secondes sans consommer de temps sur le runner dédié.
   # ---------------------------------------------------------------------------
-  build:
-    name: Compile & Package .smod
+  validate:
+    name: ✅ Validate project structure
     runs-on: ubuntu-latest
 
-    # Timeout de sécurité : si le build dépasse 90 min (image Docker UE lourde),
-    # le job est annulé pour éviter une consommation excessive de minutes.
-    timeout-minutes: 90
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔍 Validate FactoryMonitor.uplugin (JSON)
+        run: |
+          echo "→ Vérification de la syntaxe JSON du .uplugin..."
+          python3 -c "
+          import json, sys, glob
+
+          uplugins = glob.glob('**/*.uplugin', recursive=True)
+          if not uplugins:
+              print('ERREUR : Aucun fichier .uplugin trouvé.', file=sys.stderr)
+              sys.exit(1)
+
+          for path in uplugins:
+              with open(path) as f:
+                  data = json.load(f)
+              # Vérifie les champs obligatoires pour SML
+              for field in ['FileVersion', 'Version', 'VersionName', 'Modules']:
+                  if field not in data:
+                      print(f'ERREUR : Champ manquant \"{field}\" dans {path}', file=sys.stderr)
+                      sys.exit(1)
+              print(f'✅ {path} — OK (v{data[\"VersionName\"]})')
+          "
+
+      - name: 🔍 Validate workflow YAML
+        run: |
+          echo "→ Vérification de la syntaxe YAML des workflows..."
+          python3 -c "
+          import yaml, glob, sys
+          for path in glob.glob('.github/workflows/*.yml'):
+              with open(path) as f:
+                  yaml.safe_load(f)
+              print(f'✅ {path} — OK')
+          "
+
+      - name: 🔍 Check required source files
+        run: |
+          echo "→ Vérification de la présence des fichiers C++ requis..."
+          MISSING=0
+          for f in \
+            "FactoryMonitor/Source/FactoryMonitor/Public/FactoryMonitorSubsystem.h" \
+            "FactoryMonitor/Source/FactoryMonitor/Private/FactoryMonitorSubsystem.cpp" \
+            "FactoryMonitor/Source/FactoryMonitor/FactoryMonitor.Build.cs"; do
+            if [ -f "$f" ]; then
+              echo "✅ $f"
+            else
+              echo "❌ MANQUANT : $f"
+              MISSING=1
+            fi
+          done
+          exit $MISSING
+
+  # ---------------------------------------------------------------------------
+  # JOB 2 — Compilation réelle (self-hosted runner Windows)
+  # Dépend du job validate : si la validation échoue, le build ne démarre pas.
+  # Utilise Alpakit en mode headless via RunUAT pour produire le .smod.
+  # ---------------------------------------------------------------------------
+  build:
+    name: 🔨 Compile & Package .smod
+    needs: validate          # Attend la réussite de la validation
+    runs-on: [self-hosted, Windows, satisfactory]
+
+    timeout-minutes: 60      # Coupe le job si Alpakit se bloque
 
     steps:
-      # ── 1. Checkout du code source ─────────────────────────────────────────
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # ── 2. Build via l'image Docker officielle SML ─────────────────────────
+      # ── Compilation du plugin C++ + packaging .smod via Alpakit ────────────
+      # RunUAT invoque le script Alpakit.Automation qui :
+      #   1. Compile le plugin en mode Shipping via UnrealBuildTool
+      #   2. Copie les binaires et les assets dans un dossier staging
+      #   3. Crée le fichier .smod (ZIP structuré selon la spec SML)
       #
-      # POURQUOI DOCKER ?
-      #   Compiler un mod Satisfactory nécessite Unreal Engine 5.3 complet +
-      #   les headers CSS (Content Satisfactory Source). L'équipe SML maintient
-      #   une image Docker pré-compilée (~50 GB) sur ghcr.io qui embarque tout
-      #   le nécessaire, y compris Alpakit en mode headless.
-      #   C'est l'approche recommandée et documentée par la communauté SML
-      #   pour les pipelines CI sans runner self-hosted.
-      #
-      # STRUCTURE DU VOLUME :
-      #   Le runner monte le plugin (ce dépôt) dans le répertoire Mods/ du
-      #   projet Satisfactory à l'intérieur du conteneur, là où Alpakit
-      #   s'attend à le trouver pour le packaging.
-      #
-      # RÉSULTAT :
-      #   Alpakit produit un fichier FactoryMonitor.smod dans le dossier
-      #   Saved/ArchivedPlugins/ du projet. L'étape suivante le récupère.
-      # ──────────────────────────────────────────────────────────────────────
-      - name: 🔨 Build mod (Alpakit headless — Docker SML UE 5.3)
+      # Variables à définir dans Settings → Variables (pas Secrets) :
+      #   UE_ROOT  = chemin vers le dossier d'UE 5.3
+      #   SF_PROJ  = chemin complet vers FactoryGame.uproject
+      #   MOD_OUT  = dossier de sortie pour le .smod
+      - name: 🔧 Build with Alpakit (RunUAT)
+        shell: pwsh
+        env:
+          UE_ROOT:    ${{ vars.UE_ROOT }}
+          SF_PROJ:    ${{ vars.SF_PROJ }}
+          MOD_OUTPUT: ${{ vars.MOD_OUTPUT }}
         run: |
-          docker run --rm \
-            --volume "${{ github.workspace }}:/game/Mods/FactoryMonitor" \
-            --env EPIC_EMAIL="${{ secrets.EPIC_GAMES_EMAIL }}" \
-            --env EPIC_PASSWORD="${{ secrets.EPIC_GAMES_PASSWORD }}" \
-            ghcr.io/satisfactorymodding/unreal-engine:5.3 \
-            package FactoryMonitor
+          # ── Chemins ──────────────────────────────────────────────────────
+          $RunUAT    = Join-Path $env:UE_ROOT "Engine\Build\BatchFiles\RunUAT.bat"
+          $PluginDir = Join-Path $env:GITHUB_WORKSPACE "FactoryMonitor"
+          $OutDir    = $env:MOD_OUTPUT
 
-      # ── 3. Upload de l'artefact .smod ──────────────────────────────────────
-      #
-      # Le fichier .smod produit par Alpakit est sauvegardé comme artefact
-      # de workflow. Il est téléchargeable depuis :
-      #   GitHub → Actions → Dernier run → Section "Artifacts"
-      # pendant 30 jours (durée par défaut, configurable ci-dessous).
-      # ──────────────────────────────────────────────────────────────────────
+          # ── Validation des prérequis ──────────────────────────────────────
+          if (-not (Test-Path $RunUAT)) {
+            Write-Error "RunUAT introuvable : $RunUAT`nVérifie la variable UE_ROOT."
+            exit 1
+          }
+          if (-not (Test-Path $env:SF_PROJ)) {
+            Write-Error "FactoryGame.uproject introuvable : $env:SF_PROJ`nVérifie SF_PROJ."
+            exit 1
+          }
+
+          # ── Nettoyage du dossier de sortie ────────────────────────────────
+          if (Test-Path $OutDir) { Remove-Item $OutDir -Recurse -Force }
+          New-Item -ItemType Directory -Path $OutDir | Out-Null
+
+          # ── Lancement d'Alpakit via RunUAT ────────────────────────────────
+          # -ScriptsForProject : indique à UAT où chercher les scripts custom
+          # Alpakit             : nom du script d'automatisation
+          # -project            : le .uproject Satisfactory (fournit les deps)
+          # -mods               : nom de référence du mod (= nom du .uplugin)
+          # -output             : dossier de destination du .smod
+          Write-Host "→ Lancement de la compilation Alpakit..."
+          & $RunUAT `
+            -ScriptsForProject="$env:SF_PROJ" `
+            Alpakit `
+            -project="$env:SF_PROJ" `
+            -mods="FactoryMonitor" `
+            -output="$OutDir" `
+            -nocompileeditor
+
+          # ── Vérification du résultat ──────────────────────────────────────
+          $smod = Get-ChildItem $OutDir -Filter "*.smod" -Recurse | Select-Object -First 1
+          if (-not $smod) {
+            Write-Error "Aucun .smod trouvé dans $OutDir après le build."
+            exit 1
+          }
+          Write-Host "✅ Build réussi : $($smod.FullName)"
+
+          # Expose le chemin au job suivant via GITHUB_OUTPUT
+          echo "SMOD_PATH=$($smod.FullName)" >> $env:GITHUB_OUTPUT
+
+      # ── Upload de l'artefact .smod ─────────────────────────────────────────
       - name: 📦 Upload artefact .smod
         uses: actions/upload-artifact@v4
-        # Cette étape s'exécute même si le build échoue (utile pour
-        # inspecter les fichiers partiels en cas d'erreur de packaging).
-        if: always()
         with:
-          # Nom de l'artefact visible dans l'interface GitHub Actions.
-          name: FactoryMonitor-${{ github.sha }}
-          # Recherche récursive du .smod produit par Alpakit.
-          # L'action place généralement le fichier dans le répertoire
-          # du plugin ou dans un dossier "dist/".
-          path: |
-            **/*.smod
-            **/Saved/ArchivedPlugins/**/*.smod
-          # Échoue si aucun .smod n'est trouvé — signal d'échec de build clair.
+          name: FactoryMonitor-${{ github.ref_name }}-${{ github.sha }}
+          path: ${{ vars.MOD_OUTPUT }}/*.smod
           if-no-files-found: error
-          # Durée de conservation de l'artefact en jours (max: 90).
           retention-days: 30
 
-      # ── 4. Résumé du build ─────────────────────────────────────────────────
-      # Affiche un récapitulatif dans l'interface GitHub Actions.
+      # ── Résumé affiché dans l'onglet Actions ───────────────────────────────
       - name: 📋 Résumé du build
         if: success()
+        shell: pwsh
         run: |
-          echo "## ✅ Build réussi" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Champ        | Valeur |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Mod          | FactoryMonitor |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commit       | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Branche      | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Déclenché par| ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Le fichier \`.smod\` est disponible dans la section **Artifacts** ci-dessus." >> $GITHUB_STEP_SUMMARY
+          @"
+          ## ✅ Build réussi
+
+          | Champ         | Valeur |
+          |---|---|
+          | Mod           | FactoryMonitor |
+          | Commit        | ``${{ github.sha }}`` |
+          | Branche       | ``${{ github.ref_name }}`` |
+          | Déclenché par | ${{ github.actor }} |
+
+          Le fichier ``.smod`` est disponible dans la section **Artifacts** ci-dessus.
+          "@ >> $env:GITHUB_STEP_SUMMARY
